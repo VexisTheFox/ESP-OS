@@ -19,6 +19,13 @@ int selected = 0;
 #define BTN_BACK D4
 #define HALT_PIN D3
 
+// Halt logic configuration
+static const uint8_t HALT_STARTUP_SAMPLES = 20;      // number of samples at boot
+static const uint16_t HALT_STARTUP_INTERVAL_MS = 5;  // spacing between samples
+static const uint8_t HALT_RUNTIME_CONFIRM = 8;       // consecutive LOW reads needed at runtime
+static bool halted = false;                          // latched halt state
+static uint8_t haltRunCount = 0;                     // runtime low streak
+
 bool lastUp=false, lastDown=false, lastOk=false, lastBack=false;
 bool showSelectedMsg=false;
 bool showBackMsg=false;
@@ -91,20 +98,45 @@ void setup(){
   pinMode(BTN_BACK,INPUT_PULLUP);
   pinMode(HALT_PIN,INPUT_PULLUP);
 
-  if(!digitalRead(HALT_PIN)){
+  // Stabilize before sampling (let pull-ups settle)
+  delay(30);
+  // Multi-sample HALT pin to avoid spurious boot strap influence (GPIO0 is a boot strap pin)
+  uint8_t lowCount=0;
+  for(uint8_t i=0;i<HALT_STARTUP_SAMPLES;i++){
+    if(!digitalRead(HALT_PIN)) lowCount++;
+    delay(HALT_STARTUP_INTERVAL_MS);
+  }
+  Serial.print(F("[HALT] Startup samples LOW="));
+  Serial.print(lowCount);
+  Serial.print(F("/"));
+  Serial.println(HALT_STARTUP_SAMPLES);
+  if(lowCount == HALT_STARTUP_SAMPLES){
+    Serial.println(F("[HALT] All samples LOW -> entering halt"));
+    halted = true;
     showHaltScreen();
-    while(!digitalRead(HALT_PIN)) { delay(100); }
     haltForever();
+  } else if(lowCount > (HALT_STARTUP_SAMPLES/2)) {
+    Serial.println(F("[HALT] Majority LOW, ignoring (treat as noise)."));
   }
 
   drawMenu();
 }
 
 void loop(){
-  if(!digitalRead(HALT_PIN)){
-    showHaltScreen();
-    while(!digitalRead(HALT_PIN)) { delay(100); }
-    haltForever();
+  if(!halted){
+    if(!digitalRead(HALT_PIN)){
+      // count consecutive lows
+      if(haltRunCount < 255) haltRunCount++;
+      if(haltRunCount >= HALT_RUNTIME_CONFIRM){
+        Serial.println(F("[HALT] Runtime confirm -> HALT"));
+        halted = true;
+        showHaltScreen();
+        haltForever();
+      }
+    } else {
+      // reset streak on any HIGH
+      if(haltRunCount){ haltRunCount = 0; }
+    }
   }
 
   // If displaying a temporary message (selected/back), wait for any key.
